@@ -1,21 +1,26 @@
 import streamlit as st
 from openai import OpenAI
-import docx2txt
-import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import re
+import mammoth
+import requests  # New import for sending POST requests
 
 with st.sidebar:
     kaggle_server_url = st.text_input("Kaggle Server URL", "https://dominant-usually-oyster.ngrok-free.app", key="kaggle-server-url", type="default")
     model_name = st.text_input("Model Name", "NishithP2004/tsa_oral_cancer_data_extraction_Meta-Llama-3.1-8B-bnb-4bit_10e", key="model-name")
     # Navigation Pane (Creative Sidebar)
     page = st.selectbox("Navigation", ["📤 Upload & Extract", "📊 Time Series Analysis", "📝 Summary", "💬 Chat with AI"])
+    if st.button("Reset Session"):
+        st.session_state["extracted_text"] = ""
+        st.session_state["messages"] = []
+        st.success("Session has been reset.")
+        st.rerun()
 
 st.title("🦠 OncoTrack: Time Series Analysis of Oral Cancer Progression")
 st.caption("🔍 Analyze patient records and track disease progression over time")
 
-# Session State for storing extracted text
+# Session State for storing extracted text (persisted across page switches)
 if "extracted_text" not in st.session_state:
     st.session_state["extracted_text"] = ""
 
@@ -26,17 +31,63 @@ if page == "📤 Upload & Extract":
     
     if uploaded_files:
         extracted_texts = {}
+        all_responses = []  # Collect responses from all files
+        regex = r"Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:(?:.*?(?=Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:|Signed By|$))"
+        
         for file in uploaded_files:
-            text = docx2txt.process(file)
-            # Clean the extracted text
-            cleaned_text = re.sub(r'(\r\n)+', "\n", text)
-            cleaned_text = re.sub(r'\n{3,}', "\n", cleaned_text)
-            cleaned_text = re.sub(r'\t+', " ", cleaned_text)
-            extracted_texts[file.name] = cleaned_text
-            st.success(f"Text extracted from {file.name} successfully!")
-            st.text_area(f"Extracted Text Preview - {file.name}", cleaned_text, height=300)
+            try:
+                # Extract raw text using Mammoth
+                result = mammoth.extract_raw_text(file)
+                text = result.value
+
+                # Clean the extracted text
+                cleaned_text = re.sub(r'(\n){3,}', "\n", text)
+                cleaned_text = re.sub(r'(\t)+', " ", cleaned_text)
+                cleaned_text = re.sub(r'(\r\n)+', "\n", cleaned_text)
+
+                # Extract progress notes using the regex pattern
+                progress_notes = re.findall(regex, cleaned_text, flags=re.DOTALL)
+
+                st.success(f"Text extracted from {file.name} successfully!")
+                st.info(f"Found {len(progress_notes)} progress note(s) in {file.name}")
+
+                # Display a text preview of the cleaned text (and/or progress notes)
+                st.text_area(f"Extracted Text Preview - {file.name}", cleaned_text, height=300)
+
+                responses = []
+                # Send a POST request for each progress note one after the other
+                for note in progress_notes:
+                    payload = { "text": note }
+                    r = requests.post(f"{kaggle_server_url}/extract", json=payload)
+                    if r.status_code == 200:
+                        responses.append(r.json())
+                    else:
+                        responses.append({ "error": f"Status code {r.status_code}" })
+                all_responses.extend(responses)
+
+                # Save both cleaned text, progress notes and responses
+                extracted_texts[file.name] = {
+                    "cleaned_text": cleaned_text,
+                    "progress_notes": progress_notes,
+                    "responses": responses
+                }
+            except Exception as err:
+                st.error(f"Error processing {file.name}: {err}")
         
         st.session_state["extracted_text"] = extracted_texts
+
+        # If there are POST responses, tabulate the result in an editable table
+        if all_responses:
+            df = pd.DataFrame(all_responses)
+            st.markdown("## Extracted Features")
+            edited_df = st.data_editor(df, num_rows="dynamic")
+            csv = edited_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download responses as CSV",
+                data=csv,
+                file_name="responses.csv",
+                mime="text/csv",
+            )
 
 # Page 2: Time Series Analysis
 elif page == "📊 Time Series Analysis":
@@ -51,7 +102,6 @@ elif page == "📊 Time Series Analysis":
             "Tumor Size": [2.1, 2.5, 2.9, 3.2, 3.8, 4.1, 4.4, 4.9, 5.2, 5.6]
         }
         df = pd.DataFrame(data)
-        
         st.line_chart(df.set_index("Date"))
 
 # Page 3: Summary
@@ -77,11 +127,11 @@ elif page == "💬 Chat with AI":
         st.chat_message(msg["role"]).write(msg["content"])
     
     if prompt := st.chat_input():
-        if not openai_api_key:
+        if not kaggle_server_url:  # Assuming API key variable was meant to be kaggle_server_url
             st.info("Please add your OpenAI API key to continue.")
             st.stop()
         
-        client = OpenAI(api_key=openai_api_key)
+        client = OpenAI(api_key=kaggle_server_url)
         st.session_state.messages.append({"role": "user", "content": prompt})
         st.chat_message("user").write(prompt)
         response = client.chat.completions.create(model="gpt-3.5-turbo", messages=st.session_state.messages)

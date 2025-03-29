@@ -2,3 +2,5 @@ streamlit
 docx2txt
 matplotlib
 openai
+mammoth
+requests
