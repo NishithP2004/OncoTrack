@@ -105,7 +105,8 @@ if page == "📤 Upload & Extract":
         st.session_state["edited_responses"] = st.data_editor(
             pd.DataFrame(response_data), 
             num_rows="dynamic", 
-            use_container_width=True
+            use_container_width=True,
+            disabled=True
         )
 
 # Page 2: Time Series Analysis
