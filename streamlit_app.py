@@ -11,9 +11,17 @@ with st.sidebar:
     model_name = st.text_input("Model Name", "NishithP2004/tsa_oral_cancer_data_extraction_Meta-Llama-3.1-8B-bnb-4bit_10e", key="model-name")
     # Navigation Pane (Creative Sidebar)
     page = st.selectbox("Navigation", ["📤 Upload & Extract", "📊 Time Series Analysis", "📝 Summary", "💬 Chat with AI"])
+    
+    # Add a reset counter to dynamically reset widgets
+    if "reset_counter" not in st.session_state:
+        st.session_state["reset_counter"] = 0
+
     if st.button("Reset Session"):
         st.session_state["extracted_text"] = ""
         st.session_state["messages"] = []
+        st.session_state["edited_responses"] = None  # Clear edited responses
+        st.session_state["all_responses"] = None  # Clear all responses
+        st.session_state["reset_counter"] += 1  # Increment the reset counter
         st.success("Session has been reset.")
         st.rerun()
 
@@ -27,67 +35,80 @@ if "extracted_text" not in st.session_state:
 # Page 1: Upload & Extract
 if page == "📤 Upload & Extract":
     st.header("Upload Patient Records")
-    uploaded_files = st.file_uploader("Upload multiple Word Documents", accept_multiple_files=True, type=["docx"])
+    
+    # Use the reset counter to dynamically change the key for the file uploader
+    uploaded_files = st.file_uploader(
+        "Upload multiple Word Documents", 
+        accept_multiple_files=True, 
+        type=["docx"], 
+        key=f"uploaded_files_{st.session_state['reset_counter']}"
+    )
     
     if uploaded_files:
-        extracted_texts = {}
-        all_responses = []  # Collect responses from all files
-        regex = r"Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:(?:.*?(?=Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:|Signed By|$))"
-        
-        for file in uploaded_files:
-            try:
-                # Extract raw text using Mammoth
-                result = mammoth.extract_raw_text(file)
-                text = result.value
+        if "extracted_text" not in st.session_state or st.session_state["reset_counter"] > 0:
+            extracted_texts = {}
+            all_responses = []  # Collect responses from all files
+            regex = r"Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:(?:.*?(?=Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:|Signed By|$))"
+            
+            for file in uploaded_files:
+                try:
+                    # Extract raw text using Mammoth
+                    result = mammoth.extract_raw_text(file)
+                    text = result.value
 
-                # Clean the extracted text
-                cleaned_text = re.sub(r'(\n){3,}', "\n", text)
-                cleaned_text = re.sub(r'(\t)+', " ", cleaned_text)
-                cleaned_text = re.sub(r'(\r\n)+', "\n", cleaned_text)
+                    # Clean the extracted text
+                    cleaned_text = re.sub(r'(\n){3,}', "\n", text)
+                    cleaned_text = re.sub(r'(\t)+', " ", cleaned_text)
+                    cleaned_text = re.sub(r'(\r\n)+', "\n", cleaned_text)
 
-                # Extract progress notes using the regex pattern
-                progress_notes = re.findall(regex, cleaned_text, flags=re.DOTALL)
+                    # Extract progress notes using the regex pattern
+                    progress_notes = re.findall(regex, cleaned_text, flags=re.DOTALL)
 
-                st.success(f"Text extracted from {file.name} successfully!")
-                st.info(f"Found {len(progress_notes)} progress note(s) in {file.name}")
+                    st.success(f"Text extracted from {file.name} successfully!")
+                    st.info(f"Found {len(progress_notes)} progress note(s) in {file.name}")
 
-                # Display a text preview of the cleaned text (and/or progress notes)
-                st.text_area(f"Extracted Text Preview - {file.name}", cleaned_text, height=300)
+                    # Display a text preview of the cleaned text (and/or progress notes)
+                    st.text_area(f"Extracted Text Preview - {file.name}", cleaned_text, height=300)
 
-                responses = []
-                # Send a POST request for each progress note one after the other
-                for note in progress_notes:
-                    payload = { "text": note }
-                    r = requests.post(f"{kaggle_server_url}/extract", json=payload)
-                    if r.status_code == 200:
-                        responses.append(r.json())
-                    else:
-                        responses.append({ "error": f"Status code {r.status_code}" })
-                all_responses.extend(responses)
+                    responses = []
+                    # Send a POST request for each progress note one after the other
+                    for note in progress_notes:
+                        payload = { "text": note }
+                        r = requests.post(f"{kaggle_server_url}/extract", json=payload)
+                        if r.status_code == 200:
+                            response_data = r.json()["response"]
+                            responses.append({"note": note, "response": response_data})  # Include the note and response
+                        else:
+                            print(f"Error: {r.text}")
+                            responses.append({"note": note, "response": f"Error: Status code {r.status_code}"})
+                    all_responses.extend(responses)
 
-                # Save both cleaned text, progress notes and responses
-                extracted_texts[file.name] = {
-                    "cleaned_text": cleaned_text,
-                    "progress_notes": progress_notes,
-                    "responses": responses
-                }
-            except Exception as err:
-                st.error(f"Error processing {file.name}: {err}")
-        
-        st.session_state["extracted_text"] = extracted_texts
+                    # Save both cleaned text, progress notes and responses
+                    extracted_texts[file.name] = {
+                        "cleaned_text": cleaned_text,
+                        "progress_notes": progress_notes,
+                        "responses": responses
+                    }
+                except Exception as err:
+                    st.error(f"Error processing {file.name}: {err}")
+            
+            # Cache the extracted responses in session state to avoid re-sending POST requests
+            st.session_state["extracted_text"] = extracted_texts
+            st.session_state["all_responses"] = all_responses  # Cache the responses
+        else:
+            st.info("Using cached data. No new POST requests sent.")
 
-        # If there are POST responses, tabulate the result in an editable table
-        if all_responses:
-            df = pd.DataFrame(all_responses)
-            st.markdown("## Extracted Features")
-            edited_df = st.data_editor(df, num_rows="dynamic")
-            csv = edited_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download responses as CSV",
-                data=csv,
-                file_name="responses.csv",
-                mime="text/csv",
-            )
+    # If there are cached POST responses, display them
+    if st.session_state.get("all_responses"):
+        st.markdown("## Extracted Features")
+        # Extract only the `response` field from the cached responses
+        response_data = [item["response"] for item in st.session_state["all_responses"] if "response" in item]
+        # Initialize or update the DataFrame in session state
+        st.session_state["edited_responses"] = st.data_editor(
+            pd.DataFrame(response_data), 
+            num_rows="dynamic", 
+            use_container_width=True
+        )
 
 # Page 2: Time Series Analysis
 elif page == "📊 Time Series Analysis":
