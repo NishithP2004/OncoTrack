@@ -45,58 +45,56 @@ if page == "📤 Upload & Extract":
     )
     
     if uploaded_files:
-        if "extracted_text" not in st.session_state or st.session_state["reset_counter"] > 0:
-            extracted_texts = {}
-            all_responses = []  # Collect responses from all files
-            regex = r"Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:(?:.*?(?=Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:|Signed By|$))"
-            
-            for file in uploaded_files:
-                try:
-                    # Extract raw text using Mammoth
-                    result = mammoth.extract_raw_text(file)
-                    text = result.value
+        # Always reprocess files if new files are uploaded
+        extracted_texts = {}
+        all_responses = []  # Collect responses from all files
+        regex = r"Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:(?:.*?(?=Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:|Signed By|$))"
+        
+        for file in uploaded_files:
+            try:
+                # Extract raw text using Mammoth
+                result = mammoth.extract_raw_text(file)
+                text = result.value
 
-                    # Clean the extracted text
-                    cleaned_text = re.sub(r'(\n){3,}', "\n", text)
-                    cleaned_text = re.sub(r'(\t)+', " ", cleaned_text)
-                    cleaned_text = re.sub(r'(\r\n)+', "\n", cleaned_text)
+                # Clean the extracted text
+                cleaned_text = re.sub(r'(\n){3,}', "\n", text)
+                cleaned_text = re.sub(r'(\t)+', " ", cleaned_text)
+                cleaned_text = re.sub(r'(\r\n)+', "\n", cleaned_text)
 
-                    # Extract progress notes using the regex pattern
-                    progress_notes = re.findall(regex, cleaned_text, flags=re.DOTALL)
+                # Extract progress notes using the regex pattern
+                progress_notes = re.findall(regex, cleaned_text, flags=re.DOTALL)
 
-                    st.success(f"Text extracted from {file.name} successfully!")
-                    st.info(f"Found {len(progress_notes)} progress note(s) in {file.name}")
+                st.success(f"Text extracted from {file.name} successfully!")
+                st.info(f"Found {len(progress_notes)} progress note(s) in {file.name}")
 
-                    # Display a text preview of the cleaned text (and/or progress notes)
-                    st.text_area(f"Extracted Text Preview - {file.name}", cleaned_text, height=300)
+                # Display a text preview of the cleaned text (and/or progress notes)
+                st.text_area(f"Extracted Text Preview - {file.name}", cleaned_text, height=300)
 
-                    responses = []
-                    # Send a POST request for each progress note one after the other
-                    for note in progress_notes:
-                        payload = { "text": note }
-                        r = requests.post(f"{kaggle_server_url}/extract", json=payload)
-                        if r.status_code == 200:
-                            response_data = r.json()["response"]
-                            responses.append({"note": note, "response": response_data})  # Include the note and response
-                        else:
-                            print(f"Error: {r.text}")
-                            responses.append({"note": note, "response": f"Error: Status code {r.status_code}"})
-                    all_responses.extend(responses)
+                responses = []
+                # Send a POST request for each progress note one after the other
+                for note in progress_notes:
+                    payload = { "text": note }
+                    r = requests.post(f"{kaggle_server_url}/extract", json=payload)
+                    if r.status_code == 200:
+                        response_data = r.json()["response"]
+                        responses.append({"note": note, "response": response_data})  # Include the note and response
+                    else:
+                        print(f"Error: {r.text}")
+                        responses.append({"note": note, "response": f"Error: Status code {r.status_code}"})
+                all_responses.extend(responses)
 
-                    # Save both cleaned text, progress notes and responses
-                    extracted_texts[file.name] = {
-                        "cleaned_text": cleaned_text,
-                        "progress_notes": progress_notes,
-                        "responses": responses
-                    }
-                except Exception as err:
-                    st.error(f"Error processing {file.name}: {err}")
-            
-            # Cache the extracted responses in session state to avoid re-sending POST requests
-            st.session_state["extracted_text"] = extracted_texts
-            st.session_state["all_responses"] = all_responses  # Cache the responses
-        else:
-            st.info("Using cached data. No new POST requests sent.")
+                # Save both cleaned text, progress notes and responses
+                extracted_texts[file.name] = {
+                    "cleaned_text": cleaned_text,
+                    "progress_notes": progress_notes,
+                    "responses": responses
+                }
+            except Exception as err:
+                st.error(f"Error processing {file.name}: {err}")
+        
+        # Cache the extracted responses in session state to avoid re-sending POST requests
+        st.session_state["extracted_text"] = extracted_texts
+        st.session_state["all_responses"] = all_responses  # Cache the responses
 
     # If there are cached POST responses, display them
     if st.session_state.get("all_responses"):
