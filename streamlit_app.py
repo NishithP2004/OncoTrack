@@ -106,7 +106,7 @@ if page == "📤 Upload & Extract":
             pd.DataFrame(response_data), 
             num_rows="dynamic", 
             use_container_width=True,
-            disabled=False
+            # disabled=True
         )
 
 # Page 2: Time Series Analysis
