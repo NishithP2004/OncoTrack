@@ -50,6 +50,9 @@ if page == "📤 Upload & Extract":
         all_responses = []  # Collect responses from all files
         regex = r"Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:(?:.*?(?=Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:|Signed By|$))"
         
+        # Initialize a counter for the ordering of progress notes across all files
+        note_counter = 0
+
         for file in uploaded_files:
             try:
                 # Extract raw text using Mammoth
@@ -73,14 +76,23 @@ if page == "📤 Upload & Extract":
                 responses = []
                 # Send a POST request for each progress note one after the other
                 for note in progress_notes:
+                    note_counter += 1  # Increment counter for each note
                     payload = { "text": note }
                     r = requests.post(f"{kaggle_server_url}/extract", json=payload)
                     if r.status_code == 200:
                         response_data = r.json()["response"]
-                        responses.append({"note": note, "response": response_data})  # Include the note and response
+                        responses.append({
+                            "order": note_counter,
+                            "note": note,
+                            "response": response_data
+                        })
                     else:
-                        print(f"Error: {r.text}")
-                        responses.append({"note": note, "response": f"Error: Status code {r.status_code}"})
+                        st.error(f"Error: {r.text}")
+                        responses.append({
+                            "order": note_counter,
+                            "note": note,
+                            "response": f"Error: Status code {r.status_code}"
+                        })
                 all_responses.extend(responses)
 
                 # Save both cleaned text, progress notes and responses
@@ -96,17 +108,21 @@ if page == "📤 Upload & Extract":
         st.session_state["extracted_text"] = extracted_texts
         st.session_state["all_responses"] = all_responses  # Cache the responses
 
-    # If there are cached POST responses, display them
+    # If there are cached POST responses, display them in order
     if st.session_state.get("all_responses"):
         st.markdown("## Extracted Features")
-        # Extract only the `response` field from the cached responses
-        response_data = [item["response"] for item in st.session_state["all_responses"] if "response" in item]
-        # Initialize or update the DataFrame in session state
+        # Sort responses by the "order" key to preserve order
+        ordered_responses = sorted(st.session_state["all_responses"], key=lambda x: x["order"])
+        # Extract only the response dict from each entry
+        response_dicts = [entry["response"] for entry in ordered_responses]
+        # Create a DataFrame from the list of dicts; each row will contain the 24 key/value pairs
+        df_responses = pd.DataFrame(response_dicts)
         st.session_state["edited_responses"] = st.data_editor(
-            pd.DataFrame(response_data), 
-            num_rows="dynamic", 
+            df_responses,
+            num_rows="dynamic",
             use_container_width=True,
-            # disabled=True
+            disabled=True,
+            key="data_editor_unique"
         )
 
 # Page 2: Time Series Analysis
