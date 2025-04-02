@@ -45,17 +45,13 @@ if page == "📤 Upload & Extract":
     )
     
     if uploaded_files:
-        # Always reprocess files if new files are uploaded
         extracted_texts = {}
-        all_responses = []  # Collect responses from all files
-        regex = r"Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:(?:.*?(?=Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:|Signed By|$))"
-        
-        # Initialize a counter for the ordering of progress notes across all files
-        note_counter = 0
+        all_progress_notes = []  # List to accumulate (file_name, note) tuples
 
+        # First pass: Process each file and extract progress notes
         for file in uploaded_files:
             try:
-                # Extract raw text using Mammoth
+                # Extract raw text using Mammoth without manually reading bytes
                 result = mammoth.extract_raw_text(file)
                 text = result.value
 
@@ -65,48 +61,68 @@ if page == "📤 Upload & Extract":
                 cleaned_text = re.sub(r'(\r\n)+', "\n", cleaned_text)
 
                 # Extract progress notes using the regex pattern
-                progress_notes = re.findall(regex, cleaned_text, flags=re.DOTALL)
+                progress_notes = re.findall(
+                    r"Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:(?:.*?(?=Date\s*:\s*\d{2}\/\d{2}\/\d{4}\s*ProgressNotes\s*:|Signed By|$))", 
+                    cleaned_text,
+                    flags=re.DOTALL
+                )
 
                 st.success(f"Text extracted from {file.name} successfully!")
                 st.info(f"Found {len(progress_notes)} progress note(s) in {file.name}")
-
-                # Display a text preview of the cleaned text (and/or progress notes)
                 st.text_area(f"Extracted Text Preview - {file.name}", cleaned_text, height=300)
 
-                responses = []
-                # Send a POST request for each progress note one after the other
-                for note in progress_notes:
-                    note_counter += 1  # Increment counter for each note
-                    payload = { "text": note }
-                    r = requests.post(f"{kaggle_server_url}/extract", json=payload)
-                    if r.status_code == 200:
-                        response_data = r.json()["response"]
-                        responses.append({
-                            "order": note_counter,
-                            "note": note,
-                            "response": response_data
-                        })
-                    else:
-                        st.error(f"Error: {r.text}")
-                        responses.append({
-                            "order": note_counter,
-                            "note": note,
-                            "response": f"Error: Status code {r.status_code}"
-                        })
-                all_responses.extend(responses)
-
-                # Save both cleaned text, progress notes and responses
+                # Save the extracted text and progress notes
                 extracted_texts[file.name] = {
                     "cleaned_text": cleaned_text,
                     "progress_notes": progress_notes,
-                    "responses": responses
+                    "responses": []  # Will be populated later
                 }
+
+                # Accumulate notes for total count
+                for note in progress_notes:
+                    all_progress_notes.append((file.name, note))
+
             except Exception as err:
                 st.error(f"Error processing {file.name}: {err}")
-        
+
+        total_notes = len(all_progress_notes)
+        progress_bar = st.progress(0)
+        progress_text = st.empty()
+        note_counter = 0
+
+        # Second pass: Process each progress note and update the progress bar
+        for file in uploaded_files:
+            responses = []
+            for note in extracted_texts[file.name]["progress_notes"]:
+                note_counter += 1  # Increment counter for each note
+                payload = {"text": note}
+                r = requests.post(f"{kaggle_server_url}/extract", json=payload)
+                if r.status_code == 200:
+                    response_data = r.json()["response"]
+                    responses.append({
+                        "order": note_counter,
+                        "note": note,
+                        "response": response_data
+                    })
+                else:
+                    st.error(f"Error: {r.text}")
+                    responses.append({
+                        "order": note_counter,
+                        "note": note,
+                        "response": f"Error: Status code {r.status_code}"
+                    })
+
+                # Update the progress bar and display the remaining counter
+                progress = note_counter / total_notes if total_notes > 0 else 1
+                progress_bar.progress(progress)
+                remaining = total_notes - note_counter
+                progress_text.text(f"Remaining progress notes: {remaining}")
+
+            extracted_texts[file.name]["responses"] = responses
+
         # Cache the extracted responses in session state to avoid re-sending POST requests
         st.session_state["extracted_text"] = extracted_texts
-        st.session_state["all_responses"] = all_responses  # Cache the responses
+        st.session_state["all_responses"] = [resp for file in extracted_texts.values() for resp in file["responses"]]
 
     # If there are cached POST responses, display them in order
     if st.session_state.get("all_responses"):
