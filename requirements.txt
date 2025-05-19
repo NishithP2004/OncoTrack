@@ -4,4 +4,7 @@ matplotlib
 mammoth
 requests
 uuid
-st-audiorec
+streamlit-audiorec
+gTTS
+markdown
+bs4

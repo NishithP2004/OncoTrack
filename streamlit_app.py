@@ -7,6 +7,10 @@ import requests  # For making HTTP requests
 import base64
 import uuid
 from st_audiorec import st_audiorec # Corrected import based on user preference
+from gtts import gTTS
+from io import BytesIO
+import markdown
+from bs4 import BeautifulSoup
 
 with st.sidebar:
     kaggle_server_url = st.text_input("Kaggle Server URL", "https://dominant-usually-oyster.ngrok-free.app", key="kaggle-server-url", type="default")
@@ -265,15 +269,19 @@ elif page == "💬 Chat with AI":
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            if isinstance(msg.get("audio_details"), dict):
+            if isinstance(msg.get("audio_details"), dict) and msg["role"] == "assistant": # Show user's audio transcription details under assistant message that processed it
                 details = msg["audio_details"]
-                with st.expander("See transcription details", expanded=False):
+                with st.expander("See transcription details of your audio", expanded=False):
                     if "transcribed_text" in details and details["transcribed_text"]:
                         st.caption(f"🗣️ You said (transcribed): {details['transcribed_text']}")
                     if "translated_text" in details and details["translated_text"] and details.get("transcribed_text") != details["translated_text"]:
                         st.caption(f"🌐 Translated to English: {details['translated_text']}")
                     if "detected_language" in details:
                         st.caption(f"🌍 Detected language: {details['detected_language']}")
+            
+            if msg.get("tts_audio"):
+                autoplay_flag = msg.get("autoplay_tts", False)
+                st.audio(msg["tts_audio"], format="audio/mp3", autoplay=autoplay_flag)
     
     st.markdown("---")
     
@@ -294,6 +302,22 @@ elif page == "💬 Chat with AI":
             if st.session_state.messages and st.session_state.messages[-1]["content"] == "⌛ Assistant is thinking...":
                 st.session_state.messages.pop()
             assistant_response_content = response_data.get("response", "No response content from assistant.")
+            
+            # TTS Generation
+            tts_audio_bytes = None
+            try:
+                # Convert markdown to plain text for TTS
+                html_content = markdown.markdown(assistant_response_content)
+                plain_text_for_tts = BeautifulSoup(html_content, "html.parser").get_text()
+                
+                tts = gTTS(text=plain_text_for_tts, lang='en', slow=False) # Assuming English for now
+                mp3_fp = BytesIO()
+                tts.write_to_fp(mp3_fp)
+                mp3_fp.seek(0)
+                tts_audio_bytes = mp3_fp.read()
+            except Exception as tts_err:
+                print(f"TTS Generation Error: {tts_err}") # Log error, don't block chat
+
             audio_details_for_display = None
             if response_data.get("input_type") == "audio":
                 audio_details_for_display = {
@@ -301,11 +325,21 @@ elif page == "💬 Chat with AI":
                     "translated_text": response_data.get("translated_text"),
                     "detected_language": response_data.get("detected_language")
                 }
-            st.session_state.messages.append({
+            
+            assistant_message = {
                 "role": "assistant", 
                 "content": assistant_response_content,
-                "audio_details": audio_details_for_display
-            })
+                "audio_details": audio_details_for_display, # This is for the USER's audio if applicable to display context
+                "tts_audio": tts_audio_bytes
+            }
+            
+            # Determine if TTS should autoplay based on user's input type
+            if response_data.get("input_type") == "audio":
+                assistant_message["autoplay_tts"] = True
+            else:
+                assistant_message["autoplay_tts"] = False
+
+            st.session_state.messages.append(assistant_message)
         except requests.exceptions.HTTPError as e:
             if st.session_state.messages and st.session_state.messages[-1]["content"] == "⌛ Assistant is thinking...":
                 st.session_state.messages.pop()
